@@ -60,8 +60,16 @@ export function getDayOfWeek(dateStr: string): number {
   return parseDateUTC(dateStr).getUTCDay(); // 0=Sun..6=Sat
 }
 
-/** Mifflin-St Jeor BMR */
+/** Katch-McArdle (when bodyFatPct is provided) or Mifflin-St Jeor BMR */
 export function calculateBMR(profile: UserProfile, weightKg: number): number {
+  if (
+    typeof profile.bodyFatPct === 'number' &&
+    profile.bodyFatPct >= 4 &&
+    profile.bodyFatPct <= 65
+  ) {
+    const leanMassKg = weightKg * (1 - profile.bodyFatPct / 100);
+    return Math.max(950, Math.round(370 + 21.6 * leanMassKg));
+  }
   const base = 10 * weightKg + 6.25 * profile.heightCm - 5 * profile.age;
   const sexOffset =
     profile.sex === 'male' ? 5 : profile.sex === 'female' ? -161 : -78;

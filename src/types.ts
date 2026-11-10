@@ -35,6 +35,7 @@ export interface UserProfile {
   heightCm: number;
   startingWeightKg: number;
   targetWeightKg: number;
+  bodyFatPct?: number; // optional: uses Katch-McArdle lean-mass BMR when set
   activityMultiplier: number; // 1.2 - 1.9 initial prior
   unitSystem: UnitSystem;
   goalType: GoalType;

@@ -48,17 +48,52 @@ export const StrategyPanel: React.FC<StrategyProps> = ({
   onOpenCheckIn,
 }) => {
   const unit = unitWeightLabel(profile.unitSystem);
+  const [customKcalInput, setCustomKcalInput] = useState(
+    String(profile.acceptedBaseTargets.calories)
+  );
 
   const applyStrategyChange = (patch: Partial<UserProfile>, recalcTargets = true) => {
     const merged: UserProfile = { ...profile, ...patch };
+    // Recalculate formula TDEE when activityMultiplier changes while empirical data is still sparse (<14 days)
+    const effectiveExpenditure =
+      patch.activityMultiplier !== undefined && latestPoint.confidence < 75
+        ? Math.round(
+            calculateBMR(merged, latestPoint.trendWeightKg) *
+              merged.activityMultiplier
+          )
+        : latestPoint.expenditure;
+
     if (recalcTargets && merged.programStyle !== 'manual') {
       merged.acceptedBaseTargets = computeIdealTargetsFromExpenditure(
-        latestPoint.expenditure,
+        effectiveExpenditure,
         latestPoint.trendWeightKg,
         merged
       );
+      setCustomKcalInput(String(merged.acceptedBaseTargets.calories));
     }
     onUpdateProfile(merged);
+  };
+
+  const applyCustomCalorieOverride = (kcal: number) => {
+    const clamped = Math.max(1000, Math.min(6000, Math.round(kcal)));
+    // Compute balanced protein/fat/carbs around user's chosen calories
+    const tempGoalProfile: UserProfile = {
+      ...profile,
+      goalType: 'maintain',
+      goalRatePctPerWeek: 0,
+    };
+    const balanced = computeIdealTargetsFromExpenditure(
+      clamped,
+      latestPoint.trendWeightKg,
+      tempGoalProfile
+    );
+    onUpdateProfile({
+      ...profile,
+      programStyle:
+        profile.programStyle === 'coached' ? 'collaborative' : profile.programStyle,
+      acceptedBaseTargets: { ...balanced, calories: clamped },
+    });
+    setCustomKcalInput(String(clamped));
   };
 
   const toggleTrainingDay = (dow: number) => {
@@ -236,24 +271,85 @@ export const StrategyPanel: React.FC<StrategyProps> = ({
                 { id: 'balanced', label: 'Balanced' },
                 { id: 'high_carb', label: 'High Carb' },
                 { id: 'low_carb', label: 'Low Carb' },
-                { id: 'keto', label: 'Keto' },
-              ].map((d) => (
-                <button
-                  key={d.id}
-                  onClick={() => applyStrategyChange({ dietStyle: d.id as any })}
-                  className={`py-2.5 px-2 rounded-xl border text-xs font-semibold cursor-pointer ${
-                    profile.dietStyle === d.id
-                      ? 'bg-pink-500/15 border-pink-500/40 text-pink-300'
-                      : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
+              {
+                id: 'keto',
+                label: 'Keto',
+              },
+            ].map((d) => (
+              <button
+                key={d.id}
+                onClick={() => applyStrategyChange({ dietStyle: d.id as any })}
+                className={`py-2.5 px-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                  profile.dietStyle === d.id
+                    ? 'bg-pink-500/15 border-pink-500/40 text-pink-300'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
           </div>
         </div>
       </div>
+
+      {/* Day-1 Baseline Activity Level & Direct Custom Calorie Override */}
+      <div className="mt-4 pt-4 border-t border-slate-800/80 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-xs font-medium text-slate-300 mb-1">
+            Initial Activity Baseline (Used Days 1–13 Before Real TDEE Locks In)
+          </label>
+          <div className="grid grid-cols-4 gap-1.5">
+            {[
+              { mult: 1.2, label: 'Sedentary', sub: 'Desk · <5k steps' },
+              { mult: 1.3, label: 'Light', sub: '6k–8k + Lift' },
+              { mult: 1.45, label: 'Moderate', sub: '9k–11k steps' },
+              { mult: 1.6, label: 'Very Active', sub: '12k+ / Labor' },
+            ].map((a) => {
+              const active = Math.abs(profile.activityMultiplier - a.mult) < 0.04;
+              return (
+                <button
+                  key={a.mult}
+                  onClick={() => applyStrategyChange({ activityMultiplier: a.mult })}
+                  className={`py-2 px-1.5 rounded-xl border text-center cursor-pointer ${
+                    active
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="text-[11px] font-semibold">{a.label}</div>
+                  <div className="text-[9px] opacity-75">{a.sub}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-300 mb-1">
+            Custom Daily Calorie Override (Optional — Auto-Balances Macros)
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min={1000}
+              max={6000}
+              step={25}
+              value={customKcalInput}
+              onChange={(e) => setCustomKcalInput(e.target.value)}
+              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums"
+              placeholder="e.g. 1750"
+            />
+            <button
+              type="button"
+              onClick={() => applyCustomCalorieOverride(Number(customKcalInput) || 1800)}
+              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-emerald-300 shrink-0 cursor-pointer"
+            >
+              Set Target
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
       {/* Training / Rest Day Calorie Cycling Card */}
       <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5 space-y-3.5">
@@ -371,6 +467,9 @@ interface PrivacyAndDataProps {
     targetWeightDisplay: number;
     unitSystem: 'imperial' | 'metric';
     goalType: 'lose' | 'maintain' | 'gain';
+    activityMultiplier: number;
+    goalRatePctPerWeek: number;
+    bodyFatPct?: number;
   }) => void;
   onReloadDemo: () => void;
   onImportData: (weights: WeightEntry[], logs: FoodLogEntry[], mode: 'merge' | 'replace') => void;
@@ -394,11 +493,14 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
   const [importMode, setImportMode] = useState<'merge' | 'replace'>('replace');
 
   // Fresh personal profile form state
+  const initTotalIn = Math.round(profile.heightCm / 2.54);
   const [fName, setFName] = useState('Me');
   const [fUnit, setFUnit] = useState<'imperial' | 'metric'>(profile.unitSystem);
   const [fSex, setFSex] = useState<'male' | 'female' | 'neutral'>(profile.sex);
   const [fAge, setFAge] = useState(String(profile.age));
   const [fHeightCm, setFHeightCm] = useState(String(profile.heightCm));
+  const [fHeightFt, setFHeightFt] = useState(String(Math.floor(initTotalIn / 12)));
+  const [fHeightIn, setFHeightIn] = useState(String(initTotalIn % 12));
   const [fCurW, setFCurW] = useState(
     String(kgToDisplay(profile.startingWeightKg, profile.unitSystem))
   );
@@ -406,6 +508,47 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
     String(kgToDisplay(profile.targetWeightKg, profile.unitSystem))
   );
   const [fGoal, setFGoal] = useState<'lose' | 'maintain' | 'gain'>(profile.goalType);
+  const [fActivity, setFActivity] = useState('1.3');
+  const [fPacePct, setFPacePct] = useState('-0.65');
+  const [fBodyFat, setFBodyFat] = useState(
+    profile.bodyFatPct ? String(profile.bodyFatPct) : ''
+  );
+
+  // Compute live Day-1 preview right inside the onboarding form!
+  const effectiveHeightCm =
+    fUnit === 'imperial'
+      ? Math.round(((Number(fHeightFt) || 5) * 12 + (Number(fHeightIn) || 0)) * 2.54)
+      : Number(fHeightCm) || 175;
+  const previewWeightKg = displayToKg(Number(fCurW) || 170, fUnit);
+  const parsedBf = parseFloat(fBodyFat);
+  const validBf =
+    !Number.isNaN(parsedBf) && parsedBf >= 4 && parsedBf <= 65 ? parsedBf : undefined;
+  const previewRate =
+    fGoal === 'maintain'
+      ? 0
+      : fGoal === 'gain'
+        ? Math.abs(parseFloat(fPacePct) || 0.25)
+        : -Math.abs(parseFloat(fPacePct) || 0.65);
+
+  const previewProfile: UserProfile = {
+    ...profile,
+    sex: fSex,
+    age: Number(fAge) || 30,
+    heightCm: effectiveHeightCm,
+    bodyFatPct: validBf,
+    activityMultiplier: Number(fActivity) || 1.3,
+    goalType: fGoal,
+    goalRatePctPerWeek: previewRate,
+  };
+  const previewBmr = calculateBMR(previewProfile, previewWeightKg);
+  const previewInitialTdee = Math.round(
+    previewBmr * previewProfile.activityMultiplier
+  );
+  const previewTargets = computeIdealTargetsFromExpenditure(
+    previewInitialTdee,
+    previewWeightKg,
+    previewProfile
+  );
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -469,11 +612,14 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
               name: fName.trim() || 'Me',
               sex: fSex,
               age: Number(fAge) || 30,
-              heightCm: Number(fHeightCm) || 175,
+              heightCm: effectiveHeightCm,
               currentWeightDisplay: Number(fCurW) || 180,
               targetWeightDisplay: Number(fTargW) || 165,
               unitSystem: fUnit,
               goalType: fGoal,
+              activityMultiplier: Number(fActivity) || 1.3,
+              goalRatePctPerWeek: previewRate,
+              bodyFatPct: validBf,
             });
           }}
           className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1"
@@ -495,18 +641,25 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
                 const nextU = e.target.value as 'imperial' | 'metric';
                 const curKg = displayToKg(Number(fCurW) || 80, fUnit);
                 const targKg = displayToKg(Number(fTargW) || 75, fUnit);
+                if (nextU === 'imperial' && fUnit === 'metric') {
+                  const totIn = Math.round((Number(fHeightCm) || 175) / 2.54);
+                  setFHeightFt(String(Math.floor(totIn / 12)));
+                  setFHeightIn(String(totIn % 12));
+                } else if (nextU === 'metric' && fUnit === 'imperial') {
+                  setFHeightCm(String(effectiveHeightCm));
+                }
                 setFUnit(nextU);
                 setFCurW(String(kgToDisplay(curKg, nextU)));
                 setFTargW(String(kgToDisplay(targKg, nextU)));
               }}
               className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100"
             >
-              <option value="imperial">Imperial (lbs)</option>
-              <option value="metric">Metric (kg)</option>
+              <option value="imperial">Imperial (lbs, ft/in)</option>
+              <option value="metric">Metric (kg, cm)</option>
             </select>
           </div>
           <div>
-            <label className="block text-[11px] text-slate-400 mb-1">BMR Formula</label>
+            <label className="block text-[11px] text-slate-400 mb-1">BMR Sex</label>
             <select
               value={fSex}
               onChange={(e) => setFSex(e.target.value as any)}
@@ -526,15 +679,45 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
               className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums"
             />
           </div>
-          <div>
-            <label className="block text-[11px] text-slate-400 mb-1">Height (cm)</label>
-            <input
-              type="number"
-              value={fHeightCm}
-              onChange={(e) => setFHeightCm(e.target.value)}
-              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums"
-            />
-          </div>
+
+          {fUnit === 'imperial' ? (
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">
+                Height (ft / in)
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                <input
+                  type="number"
+                  min={3}
+                  max={8}
+                  placeholder="ft"
+                  value={fHeightFt}
+                  onChange={(e) => setFHeightFt(e.target.value)}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-slate-100 tabular-nums"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={11}
+                  placeholder="in"
+                  value={fHeightIn}
+                  onChange={(e) => setFHeightIn(e.target.value)}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-slate-100 tabular-nums"
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Height (cm)</label>
+              <input
+                type="number"
+                value={fHeightCm}
+                onChange={(e) => setFHeightCm(e.target.value)}
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums"
+              />
+            </div>
+          )}
+
           <div>
             <label className="block text-[11px] text-slate-400 mb-1">
               Current Weight ({fUnit === 'imperial' ? 'lbs' : 'kg'})
@@ -560,10 +743,47 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
             />
           </div>
           <div>
+            <label className="block text-[11px] text-slate-400 mb-1">
+              Body Fat % (Optional)
+            </label>
+            <input
+              type="number"
+              min={4}
+              max={65}
+              placeholder="Auto (Mifflin)"
+              value={fBodyFat}
+              onChange={(e) => setFBodyFat(e.target.value)}
+              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums"
+            />
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-[11px] text-slate-400 mb-1">
+              Daily Lifestyle / Baseline Activity (Days 1–13 Prior)
+            </label>
+            <select
+              value={fActivity}
+              onChange={(e) => setFActivity(e.target.value)}
+              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100"
+            >
+              <option value="1.2">Sedentary / Desk Job (&lt;5,000 steps/day · 1.20×)</option>
+              <option value="1.3">Lightly Active (Desk + 3x Workouts / 6k–8k steps · 1.30×)</option>
+              <option value="1.45">Moderately Active (On feet / 9k–12k steps · 1.45×)</option>
+              <option value="1.6">Very Active (Physical job / 12k+ steps · 1.60×)</option>
+            </select>
+          </div>
+
+          <div>
             <label className="block text-[11px] text-slate-400 mb-1">Goal</label>
             <select
               value={fGoal}
-              onChange={(e) => setFGoal(e.target.value as any)}
+              onChange={(e) => {
+                const g = e.target.value as 'lose' | 'maintain' | 'gain';
+                setFGoal(g);
+                if (g === 'lose') setFPacePct('-0.65');
+                else if (g === 'gain') setFPacePct('0.25');
+                else setFPacePct('0');
+              }}
               className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100"
             >
               <option value="lose">Lose Fat</option>
@@ -571,12 +791,67 @@ export const PrivacyAndDataPanel: React.FC<PrivacyAndDataProps> = ({
               <option value="gain">Build Muscle</option>
             </select>
           </div>
+
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">
+              Weekly Pace
+            </label>
+            {fGoal === 'maintain' ? (
+              <div className="w-full rounded-xl bg-slate-950/60 border border-slate-800 px-3 py-2 text-xs text-slate-400">
+                Weight Maintenance
+              </div>
+            ) : fGoal === 'lose' ? (
+              <select
+                value={fPacePct}
+                onChange={(e) => setFPacePct(e.target.value)}
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100"
+              >
+                <option value="-0.5">Gentle (-0.5% / wk)</option>
+                <option value="-0.65">Standard (-0.65% / wk)</option>
+                <option value="-0.85">Brisk (-0.85% / wk)</option>
+                <option value="-1.0">Aggressive (-1.0% / wk)</option>
+              </select>
+            ) : (
+              <select
+                value={fPacePct}
+                onChange={(e) => setFPacePct(e.target.value)}
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100"
+              >
+                <option value="0.2">Lean (+0.2% / wk)</option>
+                <option value="0.3">Standard (+0.3% / wk)</option>
+                <option value="0.5">Fast (+0.5% / wk)</option>
+              </select>
+            )}
+          </div>
+
+          {/* Live Day-1 Preview Card */}
+          <div className="col-span-2 sm:col-span-4 rounded-xl bg-slate-950/80 border border-emerald-500/30 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="text-slate-300">
+              <span className="text-slate-400">Day-1 Formula Estimate:</span>{' '}
+              BMR <span className="font-mono text-slate-200">{previewBmr}</span> ×{' '}
+              <span className="font-mono text-slate-200">{fActivity}</span> ={' '}
+              <span className="font-semibold text-amber-300">
+                {previewInitialTdee} TDEE
+              </span>{' '}
+              {fGoal !== 'maintain' && (
+                <span className="text-slate-400">
+                  ({previewTargets.calories - previewInitialTdee > 0 ? '+' : ''}
+                  {previewTargets.calories - previewInitialTdee} kcal/day goal offset)
+                </span>
+              )}
+            </div>
+            <div className="font-bold text-emerald-400 tabular-nums">
+              Day-1 Target: {previewTargets.calories} kcal ({previewTargets.protein}P ·{' '}
+              {previewTargets.fat}F · {previewTargets.carbs}C)
+            </div>
+          </div>
+
           <div className="col-span-2 sm:col-span-4 pt-1">
             <button
               type="submit"
               className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs cursor-pointer"
             >
-              Wipe Demo Data & Start My Personal Tracker
+              Wipe Demo Data & Start My Personal Tracker ({previewTargets.calories} kcal/day)
             </button>
           </div>
         </form>

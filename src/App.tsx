@@ -380,11 +380,12 @@ export const App: React.FC = () => {
     targetWeightDisplay: number;
     unitSystem: 'imperial' | 'metric';
     goalType: 'lose' | 'maintain' | 'gain';
+    activityMultiplier: number;
+    goalRatePctPerWeek: number;
+    bodyFatPct?: number;
   }) => {
     const startKg = displayToKg(setup.currentWeightDisplay, setup.unitSystem);
     const targKg = displayToKg(setup.targetWeightDisplay, setup.unitSystem);
-    const rate =
-      setup.goalType === 'lose' ? -0.5 : setup.goalType === 'gain' ? 0.25 : 0;
 
     const fresh = createFreshProfile({
       name: setup.name,
@@ -393,18 +394,28 @@ export const App: React.FC = () => {
       heightCm: setup.heightCm,
       startingWeightKg: Math.round(startKg * 100) / 100,
       targetWeightKg: Math.round(targKg * 100) / 100,
+      bodyFatPct: setup.bodyFatPct,
+      activityMultiplier: setup.activityMultiplier,
       unitSystem: setup.unitSystem,
       goalType: setup.goalType,
-      goalRatePctPerWeek: rate,
+      goalRatePctPerWeek: setup.goalRatePctPerWeek,
       isDemoData: false,
     });
-    const formulaTdee = Math.round(
-      (10 * startKg +
-        6.25 * setup.heightCm -
-        5 * setup.age +
-        (setup.sex === 'male' ? 5 : setup.sex === 'female' ? -161 : -78)) *
-        fresh.activityMultiplier
-    );
+    const bmr =
+      typeof setup.bodyFatPct === 'number' &&
+      setup.bodyFatPct >= 4 &&
+      setup.bodyFatPct <= 65
+        ? Math.max(950, Math.round(370 + 21.6 * startKg * (1 - setup.bodyFatPct / 100)))
+        : Math.max(
+            950,
+            Math.round(
+              10 * startKg +
+                6.25 * setup.heightCm -
+                5 * setup.age +
+                (setup.sex === 'male' ? 5 : setup.sex === 'female' ? -161 : -78)
+            )
+          );
+    const formulaTdee = Math.round(bmr * fresh.activityMultiplier);
     fresh.acceptedBaseTargets = computeIdealTargetsFromExpenditure(
       formulaTdee,
       startKg,

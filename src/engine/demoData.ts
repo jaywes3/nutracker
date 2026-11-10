@@ -320,10 +320,10 @@ export function createFreshProfile(
     heightCm: 178,
     startingWeightKg: 81.6, // 180 lbs
     targetWeightKg: 74.8, // 165 lbs
-    activityMultiplier: 1.5,
+    activityMultiplier: 1.3,
     unitSystem: 'imperial',
     goalType: 'lose',
-    goalRatePctPerWeek: -0.5,
+    goalRatePctPerWeek: -0.65,
     programStyle: 'coached',
     dietStyle: 'balanced',
     proteinTier: 'high',
