@@ -16,7 +16,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { emptyMicros, scaleMicros } from '../data/coreFoods';
-import { normalizeOffProduct, normalizeUsdaFood } from '../engine/importer';
+import {
+  lookupBarcodeAcrossDatabases,
+  searchOnlineFoodDatabases,
+} from '../engine/foodSearch';
 import {
   analyzeWithGeminiBYOK,
   draftItemsToLogEntries,
@@ -209,58 +212,48 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     onClose();
   };
 
-  const runOnlineCatalogSearch = async () => {
-    const q = query.trim();
+  const runOnlineCatalogSearch = async (qOverride?: string) => {
+    const q = (qOverride ?? query).trim();
     if (!q) return;
-    if (offlineOnlyMode) {
-      onRecordNetworkAudit('USDA + Open Food Facts', `Food search "${q}"`, false);
-      setOnlineError('Blocked: Air-Gap Offline Mode is active in Privacy Settings.');
-      return;
-    }
 
     setSearchingOnline(true);
     setOnlineError(null);
-    onRecordNetworkAudit('api.nal.usda.gov & world.openfoodfacts.org', `Food search "${q}"`, true);
 
-    const activeUsdaKey = usdaKey.trim() || 'DEMO_KEY';
-    const usdaUrl = `https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(
-      activeUsdaKey
-    )}&query=${encodeURIComponent(q)}&pageSize=12&dataType=${encodeURIComponent(
-      'Foundation,SR Legacy,Branded'
-    )}`;
-    const offUrl = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(
-      q
-    )}&search_simple=1&action=process&json=1&page_size=15&fields=code,product_name,brands,nutriments,serving_size,serving_quantity`;
+    const res = await searchOnlineFoodDatabases({
+      query: q,
+      usdaApiKey: usdaKey,
+      offlineOnlyMode,
+      onAudit: onRecordNetworkAudit,
+    });
 
-    try {
-      const [usdaRes, offRes] = await Promise.allSettled([
-        fetch(usdaUrl).then((r) => r.json()),
-        fetch(offUrl).then((r) => r.json()),
-      ]);
-
-      const merged: FoodItem[] = [];
-      if (usdaRes.status === 'fulfilled' && Array.isArray(usdaRes.value?.foods)) {
-        for (const raw of usdaRes.value.foods) {
-          const item = normalizeUsdaFood(raw);
-          if (item) merged.push(item);
-        }
-      }
-      if (offRes.status === 'fulfilled' && Array.isArray(offRes.value?.products)) {
-        for (const raw of offRes.value.products) {
-          const item = normalizeOffProduct(raw);
-          if (item) merged.push(item);
-        }
-      }
-      setOnlineResults(merged);
-      if (merged.length === 0) {
-        setOnlineError('No additional online matches found for that search term.');
-      }
-    } catch (err: any) {
-      setOnlineError(err?.message || 'Online search unavailable.');
-    } finally {
-      setSearchingOnline(false);
+    setOnlineResults(res.items);
+    setOnlineError(res.error);
+    if (res.rateLimitedDemoKey) {
+      setShowUsdaKeyBox(true);
     }
+    setSearchingOnline(false);
   };
+
+  // Auto-search online USDA + Open Food Facts after 500ms when local hits are sparse!
+  useEffect(() => {
+    if (tab !== 'search') return;
+    const q = query.trim();
+    if (q.length < 3 || offlineOnlyMode) {
+      if (!q) {
+        setOnlineResults([]);
+        setOnlineError(null);
+      }
+      return;
+    }
+    if (filteredLocalFoods.length >= 4) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      runOnlineCatalogSearch(q);
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, query, filteredLocalFoods.length, offlineOnlyMode]);
 
   // Instant Offline NLP Preview
   const offlineDraftItems = useMemo(
@@ -323,48 +316,24 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     }
   };
 
-  // Barcode Lookup (checks local catalog first, then Open Food Facts)
+  // Barcode Lookup (checks local catalog -> Open Food Facts 3.5M+ -> USDA Branded)
   const lookupBarcode = async (rawCode: string) => {
     const code = rawCode.replace(/[^0-9]/g, '');
     if (!code) return;
     setBarcodeInput(code);
+    setBarcodeStatus('Looking up barcode across Local DB, Open Food Facts (3.5M+) & USDA...');
 
-    const localHit = catalog.find((f) => f.barcode === code);
-    if (localHit) {
-      setBarcodeStatus(`Found in local offline database: ${localHit.name}`);
-      selectFoodForPortion(localHit);
-      return;
-    }
+    const res = await lookupBarcodeAcrossDatabases({
+      rawCode: code,
+      catalog,
+      usdaApiKey: usdaKey,
+      offlineOnlyMode,
+      onAudit: onRecordNetworkAudit,
+    });
 
-    if (offlineOnlyMode) {
-      onRecordNetworkAudit('world.openfoodfacts.org', `Barcode ${code}`, false);
-      setBarcodeStatus('Not in local cache, and Air-Gap Offline Mode blocked online Open Food Facts lookup.');
-      return;
-    }
-
-    setBarcodeStatus('Looking up barcode on Open Food Facts (3M+ products)...');
-    onRecordNetworkAudit('world.openfoodfacts.org', `Barcode lookup ${code}`, true);
-
-    try {
-      const r = await fetch(
-        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(
-          code
-        )}.json?fields=code,product_name,brands,nutriments,serving_size,serving_quantity`
-      );
-      const data = await r.json();
-      if (data?.product) {
-        const item = normalizeOffProduct({ ...data.product, code });
-        if (item) {
-          setBarcodeStatus(`Found & ready to cache locally: ${item.name}`);
-          selectFoodForPortion(item);
-          return;
-        }
-      }
-      setBarcodeStatus(
-        `No product found in Open Food Facts for ${code} — click "Attach Barcode to Custom Food" below so next scan is instant!`
-      );
-    } catch {
-      setBarcodeStatus('Network lookup failed (note: Arena static file viewer blocks internet — download the HTML file or use the Live Preview tab for live barcode lookups).');
+    setBarcodeStatus(res.sourceLabel);
+    if (res.item) {
+      selectFoodForPortion(res.item);
     }
   };
 
@@ -745,24 +714,72 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
 
                 {/* Online USDA + Open Food Facts Trigger */}
                 {query.trim().length >= 2 && (
-                  <div className="flex items-center justify-between rounded-xl bg-slate-950/70 border border-slate-800 px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-950/70 border border-slate-800 px-3 py-2 text-xs">
                     <span className="text-slate-400">
-                      Need branded or restaurant items beyond the offline core pack?
+                      Auto-searches online when local hits are sparse — or tap to search 4M+ items:
                     </span>
-                    <button
-                      onClick={runOnlineCatalogSearch}
-                      disabled={searchingOnline}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 font-medium cursor-pointer disabled:opacity-50"
-                    >
-                      {searchingOnline ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : offlineOnlyMode ? (
-                        <WifiOff className="w-3.5 h-3.5" />
-                      ) : (
-                        <Globe className="w-3.5 h-3.5" />
-                      )}
-                      Search USDA + Open Food Facts
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowUsdaKeyBox((v) => !v)}
+                        className="text-[11px] text-slate-400 hover:text-sky-300 underline cursor-pointer"
+                      >
+                        {usdaKey ? 'USDA Key ✓' : 'USDA Key'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => runOnlineCatalogSearch()}
+                        disabled={searchingOnline}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 font-medium cursor-pointer disabled:opacity-50"
+                      >
+                        {searchingOnline ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : offlineOnlyMode ? (
+                          <WifiOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Globe className="w-3.5 h-3.5" />
+                        )}
+                        Search USDA + Open Food Facts
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {showUsdaKeyBox && (
+                  <div className="rounded-xl bg-slate-950 border border-sky-500/30 p-3 space-y-2 text-xs">
+                    <div className="text-slate-300">
+                      Optional free personal USDA API key (get one in 20 sec at{' '}
+                      <span className="font-mono text-sky-300">fdc.nal.usda.gov/api-key-signup</span>{' '}
+                      for 1,000 searches/hour instead of the shared public DEMO_KEY):
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Paste your free USDA API key..."
+                        value={usdaKey}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setUsdaKey(val);
+                          try {
+                            if (val.trim()) localStorage.setItem('openphase_usda_key', val.trim());
+                            else localStorage.removeItem('openphase_usda_key');
+                          } catch {
+                            // ignore storage restrictions
+                          }
+                        }}
+                        className="flex-1 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-xs text-slate-100 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowUsdaKeyBox(false);
+                          runOnlineCatalogSearch();
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-semibold text-xs cursor-pointer"
+                      >
+                        Save & Retry
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -882,10 +899,14 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                 catalog={catalog}
                 selectedDate={selectedDate}
                 logHour={logHour}
+                offlineOnlyMode={offlineOnlyMode}
+                usdaApiKey={usdaKey}
+                onSaveCustomFood={onSaveCustomFood}
                 onSaveRecipe={(rec) => onSaveCustomFood(rec)}
                 onDeleteRecipe={(id) => onDeleteCustomFood(id)}
                 onSelectRecipeToLog={(rec) => selectFoodForPortion(rec)}
                 onLogEntries={onLogEntries}
+                onRecordNetworkAudit={onRecordNetworkAudit}
                 onCloseModal={onClose}
               />
             )}

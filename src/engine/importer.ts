@@ -356,8 +356,17 @@ export function normalizeOffProduct(p: any): FoodItem | null {
 }
 
 export function normalizeUsdaFood(f: any): FoodItem | null {
-  const name = (f?.description || '').trim();
-  if (!name) return null;
+  const rawDesc = (f?.description || '').trim();
+  if (!rawDesc) return null;
+
+  // Clean ALL-CAPS branded descriptions into readable Title Case when appropriate
+  const name =
+    rawDesc === rawDesc.toUpperCase() && rawDesc.length > 4
+      ? rawDesc
+          .toLowerCase()
+          .replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : rawDesc;
+
   const nutrients: any[] = f?.foodNutrients || [];
   const getN = (ids: number[]) => {
     const hit = nutrients.find((x) => ids.includes(Number(x.nutrientId)));
@@ -384,20 +393,58 @@ export function normalizeUsdaFood(f: any): FoodItem | null {
     vitB12: getN([1178]),
   };
 
+  const servings: Array<{ label: string; grams: number }> = [];
+  const srvSize = Number(f?.servingSize);
+  const srvUnit = String(f?.servingSizeUnit || 'g').toLowerCase();
+  if (srvSize > 0 && (srvUnit === 'g' || srvUnit === 'ml' || srvUnit === 'grm' || srvUnit === 'mlt')) {
+    const hh = (f?.householdServingFullText || '').trim();
+    servings.push({
+      label: hh ? `${hh} (${Math.round(srvSize)}g)` : `1 serving (${Math.round(srvSize)}g)`,
+      grams: Math.round(srvSize * 10) / 10,
+    });
+  }
+
+  if (Array.isArray(f?.foodMeasures)) {
+    for (const m of f.foodMeasures.slice(0, 3)) {
+      const gw = Number(m?.gramWeight);
+      const desc = (m?.disseminationText || m?.modifier || '').trim();
+      if (gw > 0 && desc && desc.toLowerCase() !== 'quantity not specified') {
+        servings.push({
+          label: `${desc} (${Math.round(gw)}g)`,
+          grams: Math.round(gw * 10) / 10,
+        });
+      }
+    }
+  }
+
+  servings.push(
+    { label: '100 g', grams: 100 },
+    { label: '4 oz (113g)', grams: 113.4 },
+    { label: '1 oz (28g)', grams: 28.35 }
+  );
+
+  const brandRaw = (f?.brandName || f?.brandOwner || '').trim();
+  const cleanBrand = brandRaw
+    ? brandRaw === brandRaw.toUpperCase() && brandRaw.length > 3
+      ? brandRaw.toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : brandRaw
+    : f?.dataType === 'Branded'
+      ? 'Branded Grocery'
+      : 'USDA';
+
+  const gtin = f?.gtinUpc ? String(f.gtinUpc).replace(/[^0-9]/g, '') : undefined;
+
   return {
     id: `usda-${f.fdcId}`,
     name,
-    brand: 'USDA Foundation',
+    brand: cleanBrand,
+    barcode: gtin || undefined,
     source: 'usda',
     caloriesPer100g: Math.round(kcal),
     proteinPer100g: Math.round(protein * 10) / 10,
     carbsPer100g: Math.round(carbs * 10) / 10,
     fatPer100g: Math.round(fat * 10) / 10,
     microsPer100g: micros,
-    servings: [
-      { label: '100 g', grams: 100 },
-      { label: '4 oz (113g)', grams: 113.4 },
-      { label: '1 oz (28g)', grams: 28.35 },
-    ],
+    servings,
   };
 }

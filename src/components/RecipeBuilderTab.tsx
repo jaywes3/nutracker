@@ -1,12 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Barcode,
   ChefHat,
   Check,
   ClipboardPaste,
   Copy,
   Download,
   Edit3,
+  Globe,
   Layers,
+  Loader2,
   Plus,
   Search,
   Share2,
@@ -14,20 +17,26 @@ import {
   Utensils,
 } from 'lucide-react';
 import { emptyMicros, scaleMicros, sumMicros } from '../data/coreFoods';
+import { searchOnlineFoodDatabases } from '../engine/foodSearch';
 import {
   buildRecipeShareBundle,
   decodeRecipeFromTextOrUrl,
 } from '../engine/recipeSharing';
+import { InlineBarcodeScanner } from './InlineBarcodeScanner';
 import type { FoodItem, FoodLogEntry, RecipeIngredient } from '../types';
 
 interface RecipeBuilderTabProps {
   catalog: FoodItem[];
   selectedDate: string;
   logHour: number;
+  offlineOnlyMode?: boolean;
+  usdaApiKey?: string;
+  onSaveCustomFood: (food: FoodItem) => void;
   onSaveRecipe: (recipe: FoodItem) => void;
   onDeleteRecipe: (recipeId: string) => void;
   onSelectRecipeToLog: (recipe: FoodItem) => void;
   onLogEntries: (entries: FoodLogEntry[]) => void;
+  onRecordNetworkAudit?: (dest: string, purpose: string, allowed: boolean) => void;
   onCloseModal: () => void;
 }
 
@@ -35,10 +44,14 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
   catalog,
   selectedDate,
   logHour,
+  offlineOnlyMode = false,
+  usdaApiKey = '',
+  onSaveCustomFood,
   onSaveRecipe,
   onDeleteRecipe,
   onSelectRecipeToLog,
   onLogEntries,
+  onRecordNetworkAudit,
   onCloseModal,
 }) => {
   const savedRecipes = useMemo(
@@ -56,8 +69,24 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
   const [customCookedWeight, setCustomCookedWeight] = useState('');
   const [ingredients, setIngredients] = useState<RecipeIngredient[]>([]);
 
-  // Ingredient picker state
+  // Ingredient picker state (Search + Online Search + Inline Barcode Scanner + Quick Custom Label)
   const [ingQuery, setIngQuery] = useState('');
+  const [ingOnlineResults, setIngOnlineResults] = useState<FoodItem[]>([]);
+  const [ingSearchingOnline, setIngSearchingOnline] = useState(false);
+  const [ingOnlineError, setIngOnlineError] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+
+  // Quick inline custom ingredient label form (in case a scanned barcode isn't in OFF/USDA yet)
+  const [customIngOpen, setCustomIngOpen] = useState(false);
+  const [ciName, setCiName] = useState('');
+  const [ciBarcode, setCiBarcode] = useState('');
+  const [ciSrvLabel, setCiSrvLabel] = useState('1 serving');
+  const [ciSrvGrams, setCiSrvGrams] = useState('100');
+  const [ciKcal, setCiKcal] = useState('');
+  const [ciProt, setCiProt] = useState('');
+  const [ciFat, setCiFat] = useState('');
+  const [ciCarbs, setCiCarbs] = useState('');
+
   const [pickingFood, setPickingFood] = useState<FoodItem | null>(null);
   const [pickServingIdx, setPickServingIdx] = useState(0);
   const [pickQty, setPickQty] = useState('1');
@@ -79,7 +108,6 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
   const handleShareRecipe = async (rec: FoodItem) => {
     const { shareUrl, shareText } = buildRecipeShareBundle(rec);
 
-    // 1. Try native mobile Share Sheet first (iOS Safari / Android Chrome 1-tap text/AirDrop/WhatsApp)
     if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
       try {
         await navigator.share({
@@ -91,21 +119,18 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
         setTimeout(() => setSharedStatusId(null), 2500);
         return;
       } catch (err) {
-        // User cancelled share sheet -> stop quietly; otherwise fall back to clipboard
         if (err instanceof Error && err.name === 'AbortError') {
           return;
         }
       }
     }
 
-    // 2. Copy directly to clipboard (works on phones & desktop browsers)
     try {
       await navigator.clipboard.writeText(shareText);
       setSharedStatusId(rec.id);
       setFallbackShareBox(null);
       setTimeout(() => setSharedStatusId(null), 2500);
     } catch {
-      // 3. Sandboxed iframe fallback: reveal selectable text box so user can still copy
       setFallbackShareBox({ recipeId: rec.id, text: shareText });
     }
   };
@@ -115,7 +140,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
       const txt = await navigator.clipboard.readText();
       if (txt) setImportInput(txt);
     } catch {
-      // Clipboard read permission denied or unsupported; user can long-press Paste in textarea
+      // Clipboard read permission denied; user can paste manually
     }
   };
 
@@ -139,6 +164,10 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     setCustomCookedWeight('');
     setIngredients([]);
     setIngQuery('');
+    setIngOnlineResults([]);
+    setIngOnlineError(null);
+    setScannerOpen(false);
+    setCustomIngOpen(false);
     setPickingFood(null);
     setMode('builder');
   };
@@ -156,6 +185,10 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     );
     setIngredients(rec.recipeIngredients || []);
     setIngQuery('');
+    setIngOnlineResults([]);
+    setIngOnlineError(null);
+    setScannerOpen(false);
+    setCustomIngOpen(false);
     setPickingFood(null);
     setMode('builder');
   };
@@ -169,11 +202,103 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
         (f) =>
           f.id !== editingId &&
           tokens.every((t) =>
-            `${f.name} ${f.brand || ''}`.toLowerCase().includes(t)
+            `${f.name} ${f.brand || ''} ${f.category || ''}`
+              .toLowerCase()
+              .includes(t)
           )
       )
-      .slice(0, 8);
+      .slice(0, 10);
   }, [catalog, ingQuery, editingId]);
+
+  const runIngredientOnlineSearch = async (qOverride?: string) => {
+    const q = (qOverride ?? ingQuery).trim();
+    if (q.length < 2) return;
+    setIngSearchingOnline(true);
+    setIngOnlineError(null);
+    const res = await searchOnlineFoodDatabases({
+      query: q,
+      usdaApiKey,
+      offlineOnlyMode,
+      onAudit: onRecordNetworkAudit,
+    });
+    setIngOnlineResults(res.items);
+    setIngOnlineError(res.error);
+    setIngSearchingOnline(false);
+  };
+
+  // Auto-search online USDA + Open Food Facts after 500ms when local matches are sparse!
+  useEffect(() => {
+    const q = ingQuery.trim();
+    if (q.length < 3 || offlineOnlyMode) {
+      if (!q) {
+        setIngOnlineResults([]);
+        setIngOnlineError(null);
+      }
+      return;
+    }
+    if (matchingIngredientFoods.length >= 4) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      runIngredientOnlineSearch(q);
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ingQuery, matchingIngredientFoods.length, offlineOnlyMode]);
+
+  const selectIngredientFood = (f: FoodItem) => {
+    // Cache online or barcode-scanned items locally so future recipe searches find them offline!
+    if (f.source === 'off' || f.source === 'usda') {
+      onSaveCustomFood({ ...f });
+    }
+    setScannerOpen(false);
+    setCustomIngOpen(false);
+    setPickingFood(f);
+    setPickServingIdx(0);
+    setPickQty('1');
+  };
+
+  const handleSaveCustomIngredient = () => {
+    if (!ciName.trim()) return;
+    const grams = Math.max(1, parseFloat(ciSrvGrams) || 100);
+    const factor100 = 100 / grams;
+    const kcal = Math.max(0, parseFloat(ciKcal) || 0);
+    const prot = Math.max(0, parseFloat(ciProt) || 0);
+    const fat = Math.max(0, parseFloat(ciFat) || 0);
+    const carbs = Math.max(0, parseFloat(ciCarbs) || 0);
+    const cleanCode = ciBarcode.replace(/[^0-9]/g, '');
+
+    const newFood: FoodItem = {
+      id: cleanCode ? `custom-bc-${cleanCode}` : `custom-${Date.now()}`,
+      name: ciName.trim(),
+      brand: 'Custom Label',
+      barcode: cleanCode || undefined,
+      source: 'custom',
+      caloriesPer100g: Math.round(kcal * factor100 * 10) / 10,
+      proteinPer100g: Math.round(prot * factor100 * 10) / 10,
+      carbsPer100g: Math.round(carbs * factor100 * 10) / 10,
+      fatPer100g: Math.round(fat * factor100 * 10) / 10,
+      microsPer100g: emptyMicros(),
+      servings: [
+        { label: `${ciSrvLabel || '1 serving'} (${grams}g)`, grams },
+        { label: '100 g', grams: 100 },
+        { label: '1 oz (28g)', grams: 28.35 },
+      ],
+      favorite: true,
+    };
+
+    onSaveCustomFood(newFood);
+    setCiName('');
+    setCiBarcode('');
+    setCiKcal('');
+    setCiProt('');
+    setCiFat('');
+    setCiCarbs('');
+    setCustomIngOpen(false);
+    setPickingFood(newFood);
+    setPickServingIdx(0);
+    setPickQty('1');
+  };
 
   const handleAddPickedIngredient = () => {
     if (!pickingFood) return;
@@ -199,6 +324,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     setIngredients((prev) => [...prev, newIng]);
     setPickingFood(null);
     setIngQuery('');
+    setIngOnlineResults([]);
     setPickQty('1');
   };
 
@@ -445,7 +571,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
               Saved Multi-Ingredient Recipes ({savedRecipes.length})
             </h3>
             <p className="text-xs text-slate-400">
-              Build once, share in 1 tap, or log by serving, weighed grams, or exploded ingredients
+              Build once, scan barcodes into recipes, share in 1 tap, or log by serving/grams
             </p>
           </div>
           <div className="flex items-center gap-1.5">
@@ -611,6 +737,13 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     );
   }
 
+  // Combined Local + Online Ingredient Results
+  const combinedIngResults = useMemo(() => {
+    const seen = new Set(matchingIngredientFoods.map((f) => f.id));
+    const extra = ingOnlineResults.filter((f) => !seen.has(f.id));
+    return [...matchingIngredientFoods, ...extra];
+  }, [matchingIngredientFoods, ingOnlineResults]);
+
   // Recipe Builder Form
   return (
     <div className="space-y-4">
@@ -680,31 +813,173 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
         </div>
       </div>
 
-      {/* Ingredient Search & Picker */}
+      {/* Ingredient Search, Barcode Scanner & Quick Custom Picker */}
       <div className="rounded-xl bg-slate-950/75 border border-slate-800 p-3 space-y-2.5">
-        <label className="block text-xs font-medium text-emerald-400">
-          + Add Ingredients to Recipe
-        </label>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <label className="text-xs font-medium text-emerald-400">
+            + Add Ingredients to Recipe
+          </label>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setPickingFood(null);
+                setCustomIngOpen(false);
+                setScannerOpen((prev) => !prev);
+              }}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border cursor-pointer transition ${
+                scannerOpen
+                  ? 'bg-amber-500 text-slate-950 border-amber-400'
+                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/35'
+              }`}
+            >
+              <Barcode className="w-3.5 h-3.5" />
+              {scannerOpen ? 'Close Scanner' : 'Scan Barcode'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPickingFood(null);
+                setScannerOpen(false);
+                setCustomIngOpen((prev) => !prev);
+              }}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border cursor-pointer ${
+                customIngOpen
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Custom Label
+            </button>
+          </div>
+        </div>
 
-        {pickingFood ? (
-          <div className="space-y-2.5 bg-slate-900 rounded-xl p-3 border border-slate-700">
+        {/* Inline Barcode Scanner right inside Recipe Builder */}
+        {scannerOpen && !pickingFood && (
+          <InlineBarcodeScanner
+            catalog={catalog}
+            usdaApiKey={usdaApiKey}
+            offlineOnlyMode={offlineOnlyMode}
+            autoStartCamera={true}
+            compact={true}
+            onFoodFound={(food) => selectIngredientFood(food)}
+            onAttachUnknownBarcode={(code) => {
+              setScannerOpen(false);
+              setCiBarcode(code);
+              setCustomIngOpen(true);
+            }}
+            onRecordNetworkAudit={onRecordNetworkAudit}
+            onCloseScanner={() => setScannerOpen(false)}
+          />
+        )}
+
+        {/* Inline Custom Nutrition Label Form (never lose your half-built recipe!) */}
+        {customIngOpen && !pickingFood && (
+          <div className="rounded-xl bg-slate-900 border border-slate-700 p-3 space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-slate-100">
-                {pickingFood.name}
+                Quick Custom Ingredient {ciBarcode ? `(Barcode: ${ciBarcode})` : ''}
               </span>
               <button
                 type="button"
-                onClick={() => setPickingFood(null)}
+                onClick={() => setCustomIngOpen(false)}
                 className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
               >
                 Cancel
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <input
+                type="text"
+                placeholder="Ingredient name *"
+                value={ciName}
+                onChange={(e) => setCiName(e.target.value)}
+                className="col-span-2 sm:col-span-1 rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100"
+              />
+              <input
+                type="text"
+                placeholder="Serving name (e.g. 1/2 cup)"
+                value={ciSrvLabel}
+                onChange={(e) => setCiSrvLabel(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100"
+              />
+              <input
+                type="number"
+                placeholder="Serving weight (g) *"
+                value={ciSrvGrams}
+                onChange={(e) => setCiSrvGrams(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100 tabular-nums"
+              />
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              <input
+                type="number"
+                placeholder="Calories *"
+                value={ciKcal}
+                onChange={(e) => setCiKcal(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100 tabular-nums"
+              />
+              <input
+                type="number"
+                placeholder="Protein (g)"
+                value={ciProt}
+                onChange={(e) => setCiProt(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100 tabular-nums"
+              />
+              <input
+                type="number"
+                placeholder="Fat (g)"
+                value={ciFat}
+                onChange={(e) => setCiFat(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100 tabular-nums"
+              />
+              <input
+                type="number"
+                placeholder="Carbs (g)"
+                value={ciCarbs}
+                onChange={(e) => setCiCarbs(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100 tabular-nums"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={!ciName.trim() || !ciKcal.trim()}
+              onClick={handleSaveCustomIngredient}
+              className="w-full py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-semibold text-xs cursor-pointer"
+            >
+              Save Food & Choose Recipe Amount →
+            </button>
+          </div>
+        )}
+
+        {/* Portion Picker once an ingredient is chosen or scanned */}
+        {pickingFood ? (
+          <div className="space-y-2.5 bg-slate-900 rounded-xl p-3 border border-emerald-500/40">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-100 truncate">
+                  {pickingFood.name}
+                </div>
+                {pickingFood.brand && (
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {pickingFood.brand} · {pickingFood.caloriesPer100g} kcal/100g
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPickingFood(null)}
+                className="text-xs text-slate-400 hover:text-slate-200 shrink-0 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <select
                 value={pickServingIdx}
                 onChange={(e) => setPickServingIdx(Number(e.target.value))}
-                className="rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100"
+                className="rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-slate-100"
               >
                 {pickingFood.servings.map((s, idx) => (
                   <option key={idx} value={idx}>
@@ -715,57 +990,105 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
               <div className="flex gap-1.5">
                 <input
                   type="number"
-                  step="0.25"
-                  min="0.1"
+                  step="any"
+                  min="0.05"
                   value={pickQty}
                   onChange={(e) => setPickQty(e.target.value)}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100 tabular-nums"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-slate-100 tabular-nums"
+                  placeholder="Amount"
                 />
                 <button
                   type="button"
                   onClick={handleAddPickedIngredient}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-semibold text-xs shrink-0 cursor-pointer"
+                  className="px-3.5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs shrink-0 cursor-pointer"
                 >
-                  Add
+                  + Add to Recipe
                 </button>
               </div>
             </div>
           </div>
         ) : (
-          <>
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search any food to add as an ingredient (e.g. ground turkey, black beans, rice)..."
-                value={ingQuery}
-                onChange={(e) => setIngQuery(e.target.value)}
-                className="w-full rounded-xl bg-slate-900 border border-slate-700 pl-8 pr-3 py-2 text-xs text-slate-100"
-              />
-            </div>
-
-            {matchingIngredientFoods.length > 0 && (
-              <div className="space-y-1 max-h-40 overflow-y-auto">
-                {matchingIngredientFoods.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => {
-                      setPickingFood(f);
-                      setPickServingIdx(0);
-                      setPickQty('1');
+          !scannerOpen &&
+          !customIngOpen && (
+            <>
+              <div className="flex gap-1.5">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Search 135+ cooking staples & 4M+ online grocery items..."
+                    value={ingQuery}
+                    onChange={(e) => setIngQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        runIngredientOnlineSearch();
+                      }
                     }}
-                    className="w-full text-left rounded-lg bg-slate-900/90 hover:bg-slate-800 px-3 py-1.5 text-xs flex items-center justify-between cursor-pointer"
+                    className="w-full rounded-xl bg-slate-900 border border-slate-700 pl-8 pr-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                {ingQuery.trim().length >= 2 && !offlineOnlyMode && (
+                  <button
+                    type="button"
+                    onClick={() => runIngredientOnlineSearch()}
+                    disabled={ingSearchingOnline}
+                    className="px-2.5 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-medium inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                    title="Search USDA & Open Food Facts online"
                   >
-                    <span className="text-slate-200 truncate">{f.name}</span>
-                    <span className="text-slate-400 tabular-nums shrink-0 ml-2">
-                      {f.caloriesPer100g} kcal/100g
-                    </span>
+                    {ingSearchingOnline ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Globe className="w-3.5 h-3.5" />
+                    )}
+                    <span className="hidden sm:inline">Search Online</span>
                   </button>
-                ))}
+                )}
               </div>
-            )}
-          </>
+
+              {ingSearchingOnline && (
+                <div className="text-[11px] text-sky-300 flex items-center gap-1.5 px-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Searching USDA & Open Food Facts grocery catalogs...
+                </div>
+              )}
+
+              {ingOnlineError && combinedIngResults.length === 0 && (
+                <div className="text-[11px] text-amber-300 bg-amber-950/25 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
+                  {ingOnlineError}
+                </div>
+              )}
+
+              {combinedIngResults.length > 0 && (
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {combinedIngResults.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => selectIngredientFood(f)}
+                      className="w-full text-left rounded-lg bg-slate-900/90 hover:bg-slate-800 px-3 py-2 text-xs flex items-center justify-between gap-2 cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-slate-100 font-medium truncate">
+                          {f.name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate">
+                          {f.brand || f.category || 'Whole Food'} ·{' '}
+                          {f.servings[0]?.label || '100 g'}
+                        </div>
+                      </div>
+                      <div className="text-right tabular-nums shrink-0">
+                        <div className="text-emerald-400 font-semibold">
+                          {f.caloriesPer100g} kcal
+                        </div>
+                        <div className="text-[10px] text-slate-400">per 100g</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )
         )}
 
         {/* Added Ingredients List */}
