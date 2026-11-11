@@ -1,4 +1,4 @@
-const CACHE_NAME = 'openphase-shell-v1';
+const CACHE_NAME = 'openphase-shell-v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

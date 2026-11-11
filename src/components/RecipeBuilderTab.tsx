@@ -210,6 +210,13 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
       .slice(0, 10);
   }, [catalog, ingQuery, editingId]);
 
+  // Combined Local + Online Ingredient Results (must stay above all conditional returns!)
+  const combinedIngResults = useMemo(() => {
+    const seen = new Set(matchingIngredientFoods.map((f) => f.id));
+    const extra = ingOnlineResults.filter((f) => !seen.has(f.id));
+    return [...matchingIngredientFoods, ...extra];
+  }, [matchingIngredientFoods, ingOnlineResults]);
+
   const runIngredientOnlineSearch = async (qOverride?: string) => {
     const q = (qOverride ?? ingQuery).trim();
     if (q.length < 2) return;
@@ -736,13 +743,6 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
       </div>
     );
   }
-
-  // Combined Local + Online Ingredient Results
-  const combinedIngResults = useMemo(() => {
-    const seen = new Set(matchingIngredientFoods.map((f) => f.id));
-    const extra = ingOnlineResults.filter((f) => !seen.has(f.id));
-    return [...matchingIngredientFoods, ...extra];
-  }, [matchingIngredientFoods, ingOnlineResults]);
 
   // Recipe Builder Form
   return (
