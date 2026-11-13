@@ -234,15 +234,17 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     setSearchingOnline(false);
   };
 
-  // Auto-search online USDA + Open Food Facts after 500ms when local hits are sparse!
+  // Only auto-search as-you-type when a personal 1,000/hr USDA key is saved;
+  // on shared 30/hr DEMO_KEY, wait for Enter / button tap so keystrokes don't burn the hourly cap!
   useEffect(() => {
     if (tab !== 'search') return;
     const q = query.trim();
-    if (q.length < 3 || offlineOnlyMode) {
-      if (!q) {
-        setOnlineResults([]);
-        setOnlineError(null);
-      }
+    if (!q) {
+      setOnlineResults([]);
+      setOnlineError(null);
+      return;
+    }
+    if (!usdaKey.trim() || q.length < 3 || offlineOnlyMode) {
       return;
     }
     if (filteredLocalFoods.length >= 4) {
@@ -250,10 +252,10 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     }
     const timer = setTimeout(() => {
       runOnlineCatalogSearch(q);
-    }, 500);
+    }, 650);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, query, filteredLocalFoods.length, offlineOnlyMode]);
+  }, [tab, query, filteredLocalFoods.length, offlineOnlyMode, usdaKey]);
 
   // Instant Offline NLP Preview
   const offlineDraftItems = useMemo(
@@ -901,6 +903,15 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                 logHour={logHour}
                 offlineOnlyMode={offlineOnlyMode}
                 usdaApiKey={usdaKey}
+                onSaveUsdaKey={(k) => {
+                  setUsdaKey(k);
+                  try {
+                    if (k) localStorage.setItem('openphase_usda_key', k);
+                    else localStorage.removeItem('openphase_usda_key');
+                  } catch {
+                    // ignore storage restrictions
+                  }
+                }}
                 onSaveCustomFood={onSaveCustomFood}
                 onSaveRecipe={(rec) => onSaveCustomFood(rec)}
                 onDeleteRecipe={(id) => onDeleteCustomFood(id)}

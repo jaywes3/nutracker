@@ -31,6 +31,7 @@ interface RecipeBuilderTabProps {
   logHour: number;
   offlineOnlyMode?: boolean;
   usdaApiKey?: string;
+  onSaveUsdaKey?: (key: string) => void;
   onSaveCustomFood: (food: FoodItem) => void;
   onSaveRecipe: (recipe: FoodItem) => void;
   onDeleteRecipe: (recipeId: string) => void;
@@ -46,6 +47,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
   logHour,
   offlineOnlyMode = false,
   usdaApiKey = '',
+  onSaveUsdaKey,
   onSaveCustomFood,
   onSaveRecipe,
   onDeleteRecipe,
@@ -74,6 +76,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
   const [ingOnlineResults, setIngOnlineResults] = useState<FoodItem[]>([]);
   const [ingSearchingOnline, setIngSearchingOnline] = useState(false);
   const [ingOnlineError, setIngOnlineError] = useState<string | null>(null);
+  const [usdaDraft, setUsdaDraft] = useState(usdaApiKey);
   const [scannerOpen, setScannerOpen] = useState(false);
 
   // Quick inline custom ingredient label form (in case a scanned barcode isn't in OFF/USDA yet)
@@ -233,14 +236,16 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     setIngSearchingOnline(false);
   };
 
-  // Auto-search online USDA + Open Food Facts after 500ms when local matches are sparse!
+  // Only auto-search as-you-type when the user has configured their own 1,000/hr USDA key!
+  // With the shared 30/hr DEMO_KEY, wait for explicit Enter / "Search Online" tap so typing doesn't burn the quota.
   useEffect(() => {
     const q = ingQuery.trim();
-    if (q.length < 3 || offlineOnlyMode) {
-      if (!q) {
-        setIngOnlineResults([]);
-        setIngOnlineError(null);
-      }
+    if (!q) {
+      setIngOnlineResults([]);
+      setIngOnlineError(null);
+      return;
+    }
+    if (!usdaApiKey.trim() || q.length < 3 || offlineOnlyMode) {
       return;
     }
     if (matchingIngredientFoods.length >= 4) {
@@ -248,10 +253,10 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
     }
     const timer = setTimeout(() => {
       runIngredientOnlineSearch(q);
-    }, 500);
+    }, 650);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ingQuery, matchingIngredientFoods.length, offlineOnlyMode]);
+  }, [ingQuery, matchingIngredientFoods.length, offlineOnlyMode, usdaApiKey]);
 
   const selectIngredientFood = (f: FoodItem) => {
     // Cache online or barcode-scanned items locally so future recipe searches find them offline!
@@ -1041,7 +1046,7 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
                     ) : (
                       <Globe className="w-3.5 h-3.5" />
                     )}
-                    <span className="hidden sm:inline">Search Online</span>
+                    <span>Online</span>
                   </button>
                 )}
               </div>
@@ -1054,8 +1059,29 @@ export const RecipeBuilderTab: React.FC<RecipeBuilderTabProps> = ({
               )}
 
               {ingOnlineError && combinedIngResults.length === 0 && (
-                <div className="text-[11px] text-amber-300 bg-amber-950/25 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
-                  {ingOnlineError}
+                <div className="text-[11px] text-amber-300 bg-amber-950/25 border border-amber-500/25 rounded-lg p-2.5 space-y-2">
+                  <div>{ingOnlineError}</div>
+                  {onSaveUsdaKey && ingOnlineError.includes('DEMO_KEY') && (
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        placeholder="Paste free key from fdc.nal.usda.gov/api-key-signup..."
+                        value={usdaDraft}
+                        onChange={(e) => setUsdaDraft(e.target.value)}
+                        className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-100 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSaveUsdaKey(usdaDraft.trim());
+                          runIngredientOnlineSearch();
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-semibold text-xs shrink-0 cursor-pointer"
+                      >
+                        Save Key
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

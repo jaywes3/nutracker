@@ -65,7 +65,7 @@ export async function searchOnlineFoodDatabases(opts: {
     activeUsdaKey
   )}&query=${encodeURIComponent(luceneQ)}&pageSize=18`;
 
-  const offUrl = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(
+  const offUrl = `https://us.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(
     q
   )}&search_simple=1&action=process&json=1&page_size=15&fields=code,product_name,brands,nutriments,serving_size,serving_quantity`;
 
