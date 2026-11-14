@@ -26,6 +26,7 @@ import {
   parseNaturalMealOffline,
 } from '../engine/nlpLogger';
 import { RecipeBuilderTab } from './RecipeBuilderTab';
+import { analyzeWithArena, arenaRelayUrl } from '../engine/arena';
 import type { FoodItem, FoodLogEntry } from '../types';
 
 interface FoodLoggerModalProps {
@@ -80,6 +81,13 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
 
   // AI / NLP state
   const [nlpText, setNlpText] = useState('');
+  const [aiProvider, setAiProvider] = useState<'arena' | 'gemini'>(() => {
+    try { return localStorage.getItem('openphase_ai_provider') === 'gemini' ? 'gemini' : 'arena'; } catch { return 'arena'; }
+  });
+  const [arenaKey, setArenaKey] = useState(() => { try { return localStorage.getItem('openphase_arena_key') || ''; } catch { return ''; } });
+  const [arenaRelay, setArenaRelay] = useState(() => { try { return localStorage.getItem('openphase_arena_relay') || ''; } catch { return ''; } });
+  const [arenaModel, setArenaModel] = useState(() => { try { return localStorage.getItem('openphase_arena_model') || 'coding-router-preview'; } catch { return 'coding-router-preview'; } });
+  const [arenaSettingsError, setArenaSettingsError] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState(geminiApiKey);
   const [showKeyBox, setShowKeyBox] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -299,6 +307,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
 
     setAiLoading(true);
     setAiReply(null);
+    setAiEstimated([]);
     onRecordNetworkAudit('generativelanguage.googleapis.com', 'BYOK Gemini Coach / Vision', true);
 
     try {
@@ -316,6 +325,35 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     } finally {
       setAiLoading(false);
     }
+  };
+
+  const handleRunArena = async () => {
+    setAiEstimated([]);
+    setAiReply(null);
+    if (offlineOnlyMode) {
+      onRecordNetworkAudit('Arena relay', 'Arena meal estimate', false);
+      setAiReply('Blocked: Air-Gap Offline Mode is enabled. Use the offline parser or disable Air-Gap Mode.');
+      return;
+    }
+    if (!arenaKey.trim() || !arenaRelay.trim()) {
+      setShowKeyBox(true);
+      setAiReply('Add your Arena API key and deployed relay URL in Arena Settings.');
+      return;
+    }
+    if (!nlpText.trim() && !photoPreview) {
+      setAiReply('Enter a food description or attach a photo first.');
+      return;
+    }
+    try {
+      const url = arenaRelayUrl(arenaRelay);
+      setAiLoading(true);
+      onRecordNetworkAudit(new URL(url).host, 'Arena relay → api.arena.ai (meal description / optional photo)', true);
+      const res = await analyzeWithArena({relayUrl:url, apiKey:arenaKey, model:arenaModel, prompt:nlpText.trim(), imageBase64:photoPreview?.base64, imageMimeType:photoPreview?.mime});
+      setAiReply(res.reply || 'Review these AI estimates before logging.');
+      setAiEstimated(res.estimatedItems);
+    } catch (err: any) {
+      setAiReply(`Error: ${err?.message || 'Arena request failed'}`);
+    } finally { setAiLoading(false); }
   };
 
   // Barcode Lookup (checks local catalog -> Open Food Facts 3.5M+ -> USDA Branded)
@@ -934,11 +972,51 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                       onClick={() => setShowKeyBox((v) => !v)}
                       className="text-[11px] text-sky-400 hover:underline cursor-pointer"
                     >
-                      {geminiApiKey ? 'Gemini Key Configured ✓' : 'Optional: Add Gemini Key'}
+                      {aiProvider === 'arena' ? 'Arena Settings' : (geminiApiKey ? 'Gemini Key Configured ✓' : 'Add Gemini Key')}
                     </button>
                   </div>
 
-                  {showKeyBox && (
+                  <div className="flex items-center gap-2 text-xs text-slate-300">
+                    <label htmlFor="ai-provider">AI provider:</label>
+                    <select id="ai-provider" value={aiProvider} onChange={(e) => {
+                      const provider = e.target.value as 'arena' | 'gemini';
+                      setAiProvider(provider); setShowKeyBox(false); setAiReply(null); setAiEstimated([]);
+                      try { localStorage.setItem('openphase_ai_provider', provider); } catch { /* private mode */ }
+                    }} className="rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100">
+                      <option value="arena">Arena</option><option value="gemini">Gemini</option>
+                    </select>
+                  </div>
+                  {showKeyBox && aiProvider === 'arena' && (
+                    <div className="rounded-lg bg-slate-900 border border-slate-700 p-3 space-y-2 text-xs">
+                      <p className="text-slate-300">Deploy the relay in ARENA-SETUP.md first. Your key is saved on this device and sent to your relay and Arena when you ask. Only use a relay you trust. Your meal description and any attached photo are sent; your profile and diary are not.</p>
+                      <label className="block text-slate-300">Cloudflare Workers relay URL
+                        <input type="url" value={arenaRelay} onChange={(e) => setArenaRelay(e.target.value)} placeholder="https://your-relay.your-name.workers.dev" className="w-full mt-1 rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-slate-100" />
+                      </label>
+                      <label className="block text-slate-300">Arena API key
+                        <input type="password" value={arenaKey} onChange={(e) => setArenaKey(e.target.value)} placeholder="Paste your Arena API key" autoComplete="off" className="w-full mt-1 rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-slate-100" />
+                      </label>
+                      <label className="block text-slate-300">Model available to your Arena key
+                        <input type="text" value={arenaModel} onChange={(e) => setArenaModel(e.target.value)} placeholder="coding-router-preview" className="w-full mt-1 rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-slate-100" />
+                      </label>
+                      <p className="text-slate-400">Default is Arena's documented coding router; availability and suitability for nutrition depend on your account. Choose an enabled model if needed. API charges may apply.</p>
+                      {arenaSettingsError && <p className="text-amber-300">{arenaSettingsError}</p>}
+                      <button type="button" onClick={() => {
+                        try {
+                          const url = arenaRelayUrl(arenaRelay);
+                          if (!arenaKey.trim()) throw new Error('Enter your Arena API key.');
+                          localStorage.setItem('openphase_arena_relay', url);
+                          localStorage.setItem('openphase_arena_key', arenaKey.trim());
+                          localStorage.setItem('openphase_arena_model', arenaModel.trim() || 'coding-router-preview');
+                          setArenaRelay(url); setArenaSettingsError(null); setShowKeyBox(false);
+                        } catch (err: any) { setArenaSettingsError(err?.message || 'Unable to save settings on this device.'); }
+                      }} className="px-3 py-2 rounded-lg bg-emerald-500 text-slate-950 font-semibold cursor-pointer">Save Arena Settings</button>
+                      <button type="button" onClick={() => {
+                        setArenaKey(''); setArenaRelay(''); setArenaModel('coding-router-preview');
+                        try { localStorage.removeItem('openphase_arena_key'); localStorage.removeItem('openphase_arena_relay'); localStorage.removeItem('openphase_arena_model'); } catch { /* ignore */ }
+                      }} className="ml-2 px-3 py-2 text-slate-300 underline cursor-pointer">Remove saved Arena settings</button>
+                    </div>
+                  )}
+                  {showKeyBox && aiProvider === 'gemini' && (
                     <div className="rounded-lg bg-slate-900 border border-slate-700 p-2.5 space-y-2">
                       <div className="text-[11px] text-slate-300">
                         Optional BYOK Gemini API Key (stored only in your browser localStorage; never sent to our server):
@@ -1005,7 +1083,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={handleRunGemini}
+                      onClick={aiProvider === 'arena' ? handleRunArena : handleRunGemini}
                       disabled={aiLoading}
                       className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-xs font-medium text-sky-200 cursor-pointer"
                     >
@@ -1014,7 +1092,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                       ) : (
                         <Sparkles className="w-3.5 h-3.5" />
                       )}
-                      Ask Cloud Gemini Vision / Coach
+                      {aiProvider === 'arena' ? 'Ask Arena' : 'Ask Cloud Gemini Vision / Coach'}
                     </button>
                   </div>
 
@@ -1085,7 +1163,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                   </div>
                 )}
 
-                {/* Cloud Gemini Response */}
+                {/* Cloud AI response: always review estimates before logging. */}
                 {aiReply && (
                   <div className="rounded-xl bg-slate-950 border border-slate-800 p-3.5 space-y-3">
                     <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
@@ -1135,7 +1213,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                           }}
                           className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs cursor-pointer"
                         >
-                          Log AI Estimated Meal
+                          Review & Log AI Estimated Meal
                         </button>
                       </>
                     )}
