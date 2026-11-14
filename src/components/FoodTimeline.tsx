@@ -32,6 +32,9 @@ function timeLabel(hour: number): string {
 function displayNumber(value: number) {
   return Number(value.toFixed(6)).toString();
 }
+function displayNutrition(value: number) {
+  return Number.isFinite(value) ? Number(value.toFixed(1)).toString() : '—';
+}
 
 interface Props {
   logs: FoodLogEntry[];
@@ -70,6 +73,10 @@ export const FoodTimeline: React.FC<Props> = ({logs, selectedDate, onCopyYesterd
                 <span className="text-sm font-medium text-slate-100 flex-1 min-w-0 break-words">{entry.foodName}</span>
                 <button type="button" onClick={() => startEdit(entry)} disabled={!canEdit} aria-label={`Edit portion for ${entry.foodName}`} title={canEdit ? 'Edit portion' : 'Original weight missing; cannot resize'} className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs disabled:opacity-40 cursor-pointer"><Pencil className="w-3.5 h-3.5" />Edit</button>
                 <button type="button" onClick={() => { if (editingId === entry.id) setEditingId(null); onDelete(entry.id); }} aria-label={`Remove ${entry.foodName}`} title="Remove entry" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+              </div>
+              <div className="ml-0 sm:ml-16 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs tabular-nums">
+                <span className="text-slate-400">{hasServing && entry.servingQty !== 1 ? `${displayNumber(entry.servingQty)} × ` : ''}{entry.servingLabel || 'Portion'}{canEdit ? ` (${displayNumber(entry.grams)} g)` : ''}</span>
+                <span className="text-slate-300"><strong className="text-slate-100">{displayNutrition(entry.calories)} kcal</strong> · <span className="text-sky-400">{displayNutrition(entry.protein)}g P</span> · <span className="text-amber-400">{displayNutrition(entry.fat)}g F</span> · <span className="text-pink-400">{displayNutrition(entry.carbs)}g C</span></span>
               </div>
               {editingId === entry.id && <form className="ml-0 sm:ml-16 rounded-xl bg-slate-950 border border-slate-700 p-3 space-y-2" onSubmit={e => {
                 e.preventDefault();

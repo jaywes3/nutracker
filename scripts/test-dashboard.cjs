@@ -32,12 +32,16 @@ const setValue=async (input,value)=>{ await act(async()=>{Object.getOwnPropertyD
  assert.ok(timeline.textContent.indexOf('Lunch food')<timeline.textContent.indexOf('Late food'));
  assert.ok(timeline.textContent.includes('12:00 AM') && timeline.textContent.includes('11:00 PM'));
  assert.ok(!timeline.textContent.includes('No items logged'));
+ let lunch = document.querySelector('[aria-label="Edit portion for Lunch food"]').closest('.py-3');
+ for (const value of ['1 portion','100 g','200 kcal','10g P','8g F','20g C']) assert.ok(lunch.textContent.includes(value), `Missing initial ${value}`);
  await click(document.querySelector('[aria-label="Edit portion for Lunch food"]'));
  await setValue(document.querySelector('[aria-label="New portion amount"]'),'150');
  await click(button('Save Portion'));
  let state=JSON.parse(localStorage.getItem('openphase_state_v1'));
  let e=state.logs.find(x=>x.id==='main');
  assert.equal(e.grams,150); assert.equal(e.calories,300); assert.equal(e.protein,15); assert.equal(e.micros.sodium,300); assert.equal(e.micros.vitB12,0.3); assert.equal(e.servingQty,1.5);
+ lunch = document.querySelector('[aria-label="Edit portion for Lunch food"]').closest('.py-3');
+ for (const value of ['1.5 × 1 portion','150 g','300 kcal','15g P','12g F','30g C']) assert.ok(lunch.textContent.includes(value), `Missing updated ${value}`);
  assert.deepEqual(state.partialDates,[prevDate]);
  assert.deepEqual(state.customFoods[0],recipe, 'editing a log must not change the saved recipe');
  assert.equal(state.logs.find(x=>x.id==='mid').calories,200);

@@ -38,7 +38,7 @@ This repository already includes a pre-built production `/docs` folder so GitHub
 
 ## Dashboard food timeline and trends
 
-The dashboard shows foods logged for the selected date beneath the weigh-in, with assigned times displayed by hour. **Copy Yesterday** adds entries from the preceding date. **Edit** changes the amount for one logged entry, in grams or servings, and proportionally updates that entry's calories, macros and micronutrients. It does not change the saved food or recipe. Imported entries without a positive original weight cannot be resized. Use the date arrows above the dashboard to view another day.
+The dashboard shows foods logged for the selected date beneath the weigh-in, with assigned times displayed by hour and each food's portion, calories, and macros. **Copy Yesterday** adds entries from the preceding date. **Edit** changes the amount for one logged entry, in grams or servings, and proportionally updates that entry's calories, macros and micronutrients. It does not change the saved food or recipe. Imported entries without a positive original weight cannot be resized. Use the date arrows above the dashboard to view another day.
 
 The **Trends** tab contains EWMA weight, Adaptive TDEE and both trend charts. The Mark Day Incomplete button has been removed; previously marked partial dates remain in your data and are still excluded from Adaptive TDEE calculations.
 
