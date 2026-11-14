@@ -175,6 +175,7 @@ interface InlineBarcodeScannerProps {
   autoStartCamera?: boolean;
   compact?: boolean;
   onFoodFound: (food: FoodItem) => void;
+  onBarcodeCaptured?: (code: string) => void;
   onAttachUnknownBarcode?: (code: string) => void;
   onRecordNetworkAudit?: (dest: string, purpose: string, allowed: boolean) => void;
   onCloseScanner?: () => void;
@@ -187,6 +188,7 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
   autoStartCamera = false,
   compact = false,
   onFoodFound,
+  onBarcodeCaptured,
   onAttachUnknownBarcode,
   onRecordNetworkAudit,
   onCloseScanner,
@@ -200,8 +202,13 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeRef = useRef(true);
+  const cameraGenerationRef = useRef(0);
 
   const stopCamera = () => {
+    cameraGenerationRef.current++;
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -210,10 +217,12 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
   };
 
   useEffect(() => {
+    activeRef.current = true;
     if (autoStartCamera) {
       startCameraScan();
     }
     return () => {
+      activeRef.current = false;
       stopCamera();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,6 +231,7 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
   const handleLookup = async (rawCode: string) => {
     const clean = rawCode.replace(/[^0-9]/g, '');
     if (!clean) return;
+    if (onBarcodeCaptured) { stopCamera(); onBarcodeCaptured(clean); return; }
     setBarcodeInput(clean);
     setNotFoundCode(null);
     setLoading(true);
@@ -246,6 +256,8 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
   };
 
   const startCameraScan = async () => {
+    stopCamera();
+    const generation = cameraGenerationRef.current;
     setStatus(null);
     setNotFoundCode(null);
     try {
@@ -256,6 +268,7 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
           height: { ideal: 720 },
         },
       });
+      if (!activeRef.current || generation !== cameraGenerationRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       streamRef.current = stream;
       setCameraActive(true);
       setTimeout(() => {
@@ -266,11 +279,12 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
       }, 80);
 
       const BarcodeDetectorCls = (window as any).BarcodeDetector;
-      const detector = BarcodeDetectorCls
-        ? new BarcodeDetectorCls({
-            formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'],
-          })
-        : null;
+      let detector: any = null;
+      try {
+        if (BarcodeDetectorCls) detector = new BarcodeDetectorCls({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+      } catch {
+        // Some devices reject a format list; use the EAN-13/UPC-A fallback.
+      }
 
       if (!canvasRef.current) {
         canvasRef.current = document.createElement('canvas');
@@ -284,6 +298,7 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
         try {
           if (detector) {
             const codes = await detector.detect(videoRef.current);
+            if (generation !== cameraGenerationRef.current || !streamRef.current) return;
             if (codes && codes.length > 0 && codes[0].rawValue) {
               clearInterval(interval);
               stopCamera();
@@ -306,10 +321,12 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
           // frame not ready
         }
       }, 320);
+      intervalRef.current = interval;
     } catch {
-      setStatus(
-        'Camera access unavailable — type the barcode numbers on the package below.'
-      );
+      if (activeRef.current && generation === cameraGenerationRef.current) {
+        stopCamera();
+        setStatus('Camera access unavailable — type the barcode numbers on the package below.');
+      }
     }
   };
 
@@ -324,7 +341,7 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
           <Barcode className="w-4 h-4" />
-          {compact ? 'Scan Ingredient Barcode' : 'UPC / EAN Barcode Scanner'}
+          {onBarcodeCaptured ? 'Scan Custom Food Barcode' : compact ? 'Scan Ingredient Barcode' : 'UPC / EAN Barcode Scanner'}
         </span>
         <div className="flex items-center gap-2">
           {!cameraActive ? (
@@ -378,30 +395,26 @@ export const InlineBarcodeScanner: React.FC<InlineBarcodeScannerProps> = ({
         </div>
       )}
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleLookup(barcodeInput);
-        }}
-        className="flex gap-2"
-      >
+      <div className="flex gap-2">
         <input
           type="text"
           inputMode="numeric"
           placeholder="Or type UPC / EAN barcode digits..."
           value={barcodeInput}
           onChange={(e) => setBarcodeInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleLookup(barcodeInput); } }}
           className="flex-1 rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-100 tabular-nums focus:outline-none focus:border-amber-500"
         />
         <button
-          type="submit"
+          type="button"
+          onClick={() => handleLookup(barcodeInput)}
           disabled={loading || !barcodeInput.trim()}
           className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-semibold text-slate-100 shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
         >
           {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-          Lookup
+          {onBarcodeCaptured ? 'Use Barcode' : 'Lookup'}
         </button>
-      </form>
+      </div>
 
       {status && (
         <div className="rounded-lg bg-slate-950/90 border border-slate-800 p-2.5 text-xs text-slate-300 space-y-2">

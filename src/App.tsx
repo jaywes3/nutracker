@@ -1,14 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
-  AlertCircle,
   Barcode,
   Calendar,
   Check,
   ChefHat,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Flame,
   Plus,
   Scale,
@@ -16,7 +14,6 @@ import {
   ShieldCheck,
   Sliders,
   Sparkles,
-  Trash2,
   TrendingDown,
   Utensils,
   WifiOff,
@@ -37,6 +34,7 @@ import {
 } from './engine/metabolism';
 import { CheckInModal } from './components/CheckInModal';
 import { FoodLoggerModal } from './components/FoodLoggerModal';
+import { FoodTimeline, resizeLogPortion } from './components/FoodTimeline';
 import { PrivacyAndDataPanel, StrategyPanel } from './components/StrategyAndAuditViews';
 import { ExpenditureTrendChart, WeightTrendChart } from './components/TrendCharts';
 import type {
@@ -320,16 +318,11 @@ export const App: React.FC = () => {
     handleAddLogs(cloned);
   };
 
-  const handleTogglePartialDay = () => {
-    setState((prev) => {
-      const exists = prev.partialDates.includes(selectedDate);
-      return {
-        ...prev,
-        partialDates: exists
-          ? prev.partialDates.filter((d) => d !== selectedDate)
-          : [...prev.partialDates, selectedDate],
-      };
-    });
+  const handleResizeLog = (id: string, newGrams: number) => {
+    setState(prev => ({
+      ...prev,
+      logs: prev.logs.map(entry => entry.id === id ? resizeLogPortion(entry, newGrams) : entry),
+    }));
   };
 
   const handleAcceptCheckIn = (
@@ -511,7 +504,6 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
 
   const targets = dayTargetInfo.targets;
   const remainingKcal = targets.calories - dayTotals.calories;
-  const isPartialToday = state.partialDates.includes(selectedDate);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 pb-24 sm:pb-12">
@@ -543,7 +535,7 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
           <nav className="hidden sm:flex items-center gap-1 bg-slate-900/90 border border-slate-800 rounded-xl p-1 text-xs">
             {[
               { id: 'dashboard', label: 'Dashboard', icon: Activity },
-              { id: 'diary', label: 'Food Timeline', icon: Utensils },
+              { id: 'diary', label: 'Trends', icon: TrendingDown },
               { id: 'strategy', label: 'Strategy & TDEE', icon: Sliders },
               { id: 'privacy', label: 'Import & Privacy', icon: ShieldCheck },
             ].map((item) => {
@@ -921,7 +913,7 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
                     <Barcode className="w-3.5 h-3.5 text-amber-400 shrink-0" /> Barcode
                   </button>
                   <button
-                    onClick={() => setActiveTab('diary')}
+                    onClick={() => document.getElementById('food-timeline')?.scrollIntoView({ behavior: 'smooth' })}
                     className="py-2 px-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-200 flex items-center justify-center gap-1 font-medium cursor-pointer"
                   >
                     <Utensils className="w-3.5 h-3.5 text-pink-400 shrink-0" /> Diary
@@ -929,7 +921,7 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
                 </div>
               </div>
 
-              {/* Right Column: Morning Weigh-In + Metabolism Cards */}
+              {/* Right Column: Morning Weigh-In */}
               <div className="lg:col-span-5 flex flex-col justify-between gap-4">
                 {/* Fast Scale Weigh-In Card */}
                 <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4">
@@ -978,98 +970,10 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
                   </form>
                 </div>
 
-                {/* Live EWMA Trend Weight + Adaptive TDEE Engine Readout */}
-                <div className="grid grid-cols-2 gap-3 flex-1">
-                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex flex-col justify-between">
-                    <div className="flex items-center justify-between text-xs text-slate-400">
-                      <span>EWMA Trend Weight</span>
-                      <TrendingDown className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div className="my-1">
-                      <span className="text-2xl font-bold text-emerald-400 tabular-nums">
-                        {kgToDisplay(selectedDayPoint.trendWeightKg, state.profile.unitSystem)}
-                      </span>
-                      <span className="text-xs text-slate-400 ml-1">{unit}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400 tabular-nums">
-                      7d change:{' '}
-                      <span className="text-slate-200 font-medium">
-                        {selectedDayPoint.weeklyTrendDeltaKg > 0 ? '+' : ''}
-                        {kgToDisplay(
-                          selectedDayPoint.weeklyTrendDeltaKg,
-                          state.profile.unitSystem
-                        )}{' '}
-                        {unit}/wk
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex flex-col justify-between">
-                    <div className="flex items-center justify-between text-xs text-slate-400">
-                      <span>Adaptive TDEE</span>
-                      <Flame className="w-4 h-4 text-amber-400" />
-                    </div>
-                    <div className="my-1">
-                      <span className="text-2xl font-bold text-amber-400 tabular-nums">
-                        {selectedDayPoint.expenditure}
-                      </span>
-                      <span className="text-xs text-slate-400 ml-1">kcal</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400 tabular-nums">
-                      Band: {selectedDayPoint.expenditureLow}–{selectedDayPoint.expenditureHigh} (
-                      {selectedDayPoint.confidence}%)
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
 
-            {/* Interactive Charts Row: Weight Trend vs Scale + Adaptive Expenditure vs Intake */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-100">
-                      Weight Trend (EWMA) vs. Raw Scale Noise
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      Hover/tap days to see how EWMA (α = {state.profile.ewmaAlpha}) filters water spikes
-                    </p>
-                  </div>
-                  <span className="text-[11px] px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-300 border border-sky-500/20 tabular-nums">
-                    Goal: {kgToDisplay(state.profile.targetWeightKg, state.profile.unitSystem)} {unit}
-                  </span>
-                </div>
-                <WeightTrendChart
-                  series={series}
-                  unitSystem={state.profile.unitSystem}
-                  targetWeightKg={state.profile.targetWeightKg}
-                />
-              </div>
-
-              <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-100">
-                      Adaptive Expenditure (TDEE) & Logged Intake
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      14-day energy balance engine with confidence uncertainty band
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setCheckInOpen(true)}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-medium cursor-pointer"
-                  >
-                    Check-In Math
-                  </button>
-                </div>
-                <ExpenditureTrendChart
-                  series={series}
-                  targetCalories={state.profile.acceptedBaseTargets.calories}
-                />
-              </div>
-            </div>
+            <FoodTimeline key={selectedDate} logs={selectedLogs} selectedDate={selectedDate} onCopyYesterday={handleCopyYesterday} onDelete={handleDeleteLog} onResize={handleResizeLog} />
 
             {/* 7-Day Micronutrient Coverage Panel */}
             <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5">
@@ -1136,171 +1040,104 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
 
         {activeTab === 'diary' && (
           <div className="space-y-4">
-            {/* Timeline Controls */}
-            <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div><h2 className="text-base font-semibold text-slate-100">Trends</h2><p className="text-xs text-slate-400">Weight and adaptive expenditure</p></div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setSelectedDate(addDays(selectedDate, -1))}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="text-sm font-semibold text-slate-100 tabular-nums">
-                  {selectedDate === todayStr ? `Today · ${selectedDate}` : selectedDate}
-                </span>
-                <button
-                  onClick={() =>
-                    setSelectedDate(
-                      selectedDate < todayStr ? addDays(selectedDate, 1) : todayStr
-                    )
-                  }
-                  disabled={selectedDate >= todayStr}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 cursor-pointer"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
+                <button aria-label="Previous date" onClick={() => setSelectedDate(addDays(selectedDate, -1))} className="p-1.5 rounded-lg bg-slate-800 text-slate-200 cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
+                <span className="text-xs text-slate-300 tabular-nums">{selectedDate === todayStr ? `Today · ${selectedDate}` : selectedDate}</span>
+                <button aria-label="Next date" onClick={() => setSelectedDate(selectedDate < todayStr ? addDays(selectedDate, 1) : todayStr)} disabled={selectedDate >= todayStr} className="p-1.5 rounded-lg bg-slate-800 text-slate-200 disabled:opacity-30 cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+            </div>
+                {/* Live EWMA Trend Weight + Adaptive TDEE Engine Readout */}
+                <div className="grid grid-cols-2 gap-3 flex-1">
+                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex flex-col justify-between">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>EWMA Trend Weight</span>
+                      <TrendingDown className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div className="my-1">
+                      <span className="text-2xl font-bold text-emerald-400 tabular-nums">
+                        {kgToDisplay(selectedDayPoint.trendWeightKg, state.profile.unitSystem)}
+                      </span>
+                      <span className="text-xs text-slate-400 ml-1">{unit}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 tabular-nums">
+                      7d change:{' '}
+                      <span className="text-slate-200 font-medium">
+                        {selectedDayPoint.weeklyTrendDeltaKg > 0 ? '+' : ''}
+                        {kgToDisplay(
+                          selectedDayPoint.weeklyTrendDeltaKg,
+                          state.profile.unitSystem
+                        )}{' '}
+                        {unit}/wk
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex flex-col justify-between">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Adaptive TDEE</span>
+                      <Flame className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div className="my-1">
+                      <span className="text-2xl font-bold text-amber-400 tabular-nums">
+                        {selectedDayPoint.expenditure}
+                      </span>
+                      <span className="text-xs text-slate-400 ml-1">kcal</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 tabular-nums">
+                      Band: {selectedDayPoint.expenditureLow}–{selectedDayPoint.expenditureHigh} (
+                      {selectedDayPoint.confidence}%)
+                    </div>
+                  </div>
+                </div>
+            {/* Interactive Charts Row: Weight Trend vs Scale + Adaptive Expenditure vs Intake */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-100">
+                      Weight Trend (EWMA) vs. Raw Scale Noise
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Hover/tap days to see how EWMA (α = {state.profile.ewmaAlpha}) filters water spikes
+                    </p>
+                  </div>
+                  <span className="text-[11px] px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-300 border border-sky-500/20 tabular-nums">
+                    Goal: {kgToDisplay(state.profile.targetWeightKg, state.profile.unitSystem)} {unit}
+                  </span>
+                </div>
+                <WeightTrendChart
+                  series={series}
+                  unitSystem={state.profile.unitSystem}
+                  targetWeightKg={state.profile.targetWeightKg}
+                />
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <button
-                  onClick={handleCopyYesterday}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  Copy Yesterday
-                </button>
-
-                <button
-                  onClick={handleTogglePartialDay}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer ${
-                    isPartialToday
-                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-                      : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-slate-200'
-                  }`}
-                  title="Incomplete days are excluded from Adaptive TDEE math so half-logged days never skew expenditure downward"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  {isPartialToday ? 'Marked Partial Day (Excluded from TDEE)' : 'Mark Day Incomplete'}
-                </button>
+              <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-100">
+                      Adaptive Expenditure (TDEE) & Logged Intake
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      14-day energy balance engine with confidence uncertainty band
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setCheckInOpen(true)}
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-medium cursor-pointer"
+                  >
+                    Check-In Math
+                  </button>
+                </div>
+                <ExpenditureTrendChart
+                  series={series}
+                  targetCalories={state.profile.acceptedBaseTargets.calories}
+                />
               </div>
             </div>
 
-            {/* Hourly Food Log Timeline */}
-            <div className="rounded-2xl bg-slate-900/80 border border-slate-800 divide-y divide-slate-800/80 overflow-hidden">
-              {[7, 8, 9, 11, 12, 13, 15, 16, 18, 19, 20, 21].map((hour) => {
-                const entriesAtHour = selectedLogs.filter((l) => l.hour === hour);
-                // Always display standard meal hours (8, 12, 16, 19) + any hour with entries
-                if (
-                  entriesAtHour.length === 0 &&
-                  ![8, 12, 16, 19].includes(hour)
-                ) {
-                  return null;
-                }
-                const label =
-                  hour === 12
-                    ? '12:00 PM'
-                    : hour > 12
-                    ? `${hour - 12}:00 PM`
-                    : `${hour}:00 AM`;
-                const hourKcal = entriesAtHour.reduce((s, e) => s + e.calories, 0);
-
-                return (
-                  <div key={hour} className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-xs font-semibold text-emerald-400 tabular-nums w-16">
-                          {label}
-                        </span>
-                        {hourKcal > 0 && (
-                          <span className="text-xs text-slate-400 tabular-nums">
-                            {hourKcal} kcal
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        onClick={() =>
-                          setLoggerModal({ open: true, tab: 'search', hour })
-                        }
-                        className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-300 cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Add at {label}
-                      </button>
-                    </div>
-
-                    {entriesAtHour.length === 0 ? (
-                      <div className="text-xs text-slate-600 pl-[4.5rem]">
-                        No items logged
-                      </div>
-                    ) : (
-                      <div className="space-y-1.5 pl-0 sm:pl-[4.5rem]">
-                        {entriesAtHour.map((entry) => (
-                          <div
-                            key={entry.id}
-                            className="flex items-center justify-between gap-3 rounded-xl bg-slate-950/75 border border-slate-800/80 px-3.5 py-2.5"
-                          >
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-slate-100 truncate">
-                                {entry.foodName}
-                              </div>
-                              <div className="text-xs text-slate-400">
-                                {entry.servingQty !== 1 ? `${entry.servingQty} × ` : ''}
-                                {entry.servingLabel} ({entry.grams}g)
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-3 shrink-0">
-                              <div className="text-right tabular-nums">
-                                <div className="text-sm font-semibold text-slate-100">
-                                  {entry.calories} kcal
-                                </div>
-                                <div className="text-[11px] text-slate-400">
-                                  <span className="text-sky-400">{entry.protein}P</span> ·{' '}
-                                  <span className="text-amber-400">{entry.fat}F</span> ·{' '}
-                                  <span className="text-pink-400">{entry.carbs}C</span>
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => handleDeleteLog(entry.id)}
-                                className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-900 cursor-pointer"
-                                title="Remove entry"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Any entries logged at non-standard hours */}
-              {selectedLogs
-                .filter(
-                  (l) => ![7, 8, 9, 11, 12, 13, 15, 16, 18, 19, 20, 21].includes(l.hour)
-                )
-                .map((entry) => (
-                  <div key={entry.id} className="p-4 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs text-emerald-400 mr-2">{entry.hour}:00</span>
-                      <span className="text-sm font-medium text-slate-100">
-                        {entry.foodName}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-semibold tabular-nums">
-                        {entry.calories} kcal
-                      </span>
-                      <button
-                        onClick={() => handleDeleteLog(entry.id)}
-                        className="p-1.5 text-slate-500 hover:text-rose-400 cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-            </div>
           </div>
         )}
 
@@ -1334,7 +1171,7 @@ Today (${selectedDate}) Consumed: ${dayTotals.calories} / ${dayTargetInfo.target
       <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 border-t border-slate-800 bg-slate-950/95 backdrop-blur-md grid grid-cols-4 py-1.5 px-2 text-[11px]">
         {[
           { id: 'dashboard', label: 'Dashboard', icon: Activity },
-          { id: 'diary', label: 'Timeline', icon: Utensils },
+          { id: 'diary', label: 'Trends', icon: TrendingDown },
           { id: 'strategy', label: 'Strategy', icon: Sliders },
           { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
         ].map((item) => {

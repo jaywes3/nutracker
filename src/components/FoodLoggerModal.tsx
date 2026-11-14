@@ -27,6 +27,8 @@ import {
 } from '../engine/nlpLogger';
 import { RecipeBuilderTab } from './RecipeBuilderTab';
 import { analyzeWithArena, arenaRelayUrl } from '../engine/arena';
+import { readNutritionLabel } from '../engine/nutritionLabel';
+import { InlineBarcodeScanner } from './InlineBarcodeScanner';
 import type { FoodItem, FoodLogEntry } from '../types';
 
 interface FoodLoggerModalProps {
@@ -127,6 +129,10 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
   });
   const [showUsdaKeyBox, setShowUsdaKeyBox] = useState(false);
   const [customMode, setCustomMode] = useState<'quick' | 'save'>('quick');
+  const [customScannerOpen, setCustomScannerOpen] = useState(false);
+  const [labelPhoto, setLabelPhoto] = useState<{base64:string; mime:string; url:string} | null>(null);
+  const [labelLoading, setLabelLoading] = useState(false);
+  const [labelStatus, setLabelStatus] = useState<string | null>(null);
   const [cName, setCName] = useState('');
   const [cBrand, setCBrand] = useState('');
   const [cGrams, setCGrams] = useState('100');
@@ -428,9 +434,77 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
     }
   };
 
+  const handleLabelPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLabelPhoto(null);
+    setLabelStatus('Preparing photo on this device…');
+    const reader = new FileReader();
+    reader.onerror = () => setLabelStatus('Could not read that photo. Try another.');
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => setLabelStatus('Could not open this image. Try a JPEG or PNG photo.');
+      image.onload = () => {
+        try {
+          const factor = Math.min(1, 2200 / Math.max(image.width, image.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(image.width * factor));
+          canvas.height = Math.max(1, Math.round(image.height * factor));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('Image processing unavailable');
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          const url = canvas.toDataURL('image/jpeg', 0.88);
+          setLabelPhoto({url, base64:url.slice(url.indexOf(',') + 1), mime:'image/jpeg'});
+          setLabelStatus('Photo ready. Tap Read Label to send it to Arena.');
+        } catch { setLabelStatus('Could not process this photo. Try another.'); }
+      };
+      image.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleReadLabel = async () => {
+    if (!labelPhoto) return;
+    if (offlineOnlyMode) {
+      onRecordNetworkAudit('Arena relay', 'Nutrition-label photo', false);
+      setLabelStatus('Air-Gap Offline Mode is on. Turn it off to send this photo to Arena.');
+      return;
+    }
+    if (!arenaKey.trim() || !arenaRelay.trim()) {
+      setLabelStatus('Set up your Arena key and relay in Describe → Arena Settings first.');
+      return;
+    }
+    setLabelLoading(true);
+    setLabelStatus('Reading label with Arena…');
+    try {
+      const url = arenaRelayUrl(arenaRelay);
+      onRecordNetworkAudit(new URL(url).host, 'Arena relay → api.arena.ai (nutrition-label photo)', true);
+      const r = await readNutritionLabel({relayUrl:url,apiKey:arenaKey,model:arenaModel,base64:labelPhoto.base64,mime:labelPhoto.mime});
+      const readable = [r.calories,r.protein,r.carbs,r.fat,r.fiber].some(v => v !== null);
+      if (!readable) {
+        setLabelStatus('No nutrition values were read. ' + (r.notes || 'Try a clearer, closer photo of the nutrition panel.'));
+        return;
+      }
+      if (r.name) setCName(r.name);
+      if (r.brand) setCBrand(r.brand);
+      setCServingLabel(r.servingLabel || '');
+      setCGrams(r.servingGrams == null ? '' : String(r.servingGrams));
+      setCKcal(r.calories == null ? '' : String(r.calories));
+      setCProt(r.protein == null ? '' : String(r.protein));
+      setCCarbs(r.carbs == null ? '' : String(r.carbs));
+      setCFat(r.fat == null ? '' : String(r.fat));
+      setCFiber(r.fiber == null ? '' : String(r.fiber));
+      const missing = [r.servingGrams === null && 'serving weight', r.calories === null && 'calories', r.protein === null && 'protein', r.carbs === null && 'carbs', r.fat === null && 'fat', r.fiber === null && 'fiber'].filter(Boolean);
+      setLabelStatus(`Fields filled from the photo. Check every value and serving size against the label.${missing.length ? ` Not read: ${missing.join(', ')}. Enter these manually; blank nutrients otherwise log as zero.` : ''}${r.notes ? ` ${r.notes}` : ''}`);
+    } catch (err:any) { setLabelStatus(`Could not read label: ${err?.message || 'Please try again.'}`); }
+    finally { setLabelLoading(false); }
+  };
+
   const handleQuickOrCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const grams = Math.max(1, parseFloat(cGrams) || 100);
+    const grams = parseFloat(cGrams);
+    if (!Number.isFinite(grams) || grams <= 0) return;
     const kcal = Math.max(0, parseFloat(cKcal) || 0);
     const prot = Math.max(0, parseFloat(cProt) || 0);
     const carbs = Math.max(0, parseFloat(cCarbs) || 0);
@@ -1339,6 +1413,19 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                   </button>
                 </div>
 
+                <div className="rounded-xl bg-slate-950/70 border border-sky-500/30 p-3 space-y-2 text-xs">
+                  <div className="font-semibold text-sky-300">Fill from a nutrition-label photo</div>
+                  <p className="text-slate-400">The photo is sent to your Arena relay and Arena only when you tap Read Label. Requires your configured Arena key and a vision-capable model. Check all values against the label.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 text-slate-100 cursor-pointer"><Camera className="w-4 h-4" />Take Label Photo<input type="file" accept="image/*" capture="environment" onChange={handleLabelPhoto} disabled={labelLoading} className="hidden" /></label>
+                    <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 text-slate-100 cursor-pointer">Choose Photo<input type="file" accept="image/*" onChange={handleLabelPhoto} disabled={labelLoading} className="hidden" /></label>
+                    {labelPhoto && <button type="button" onClick={handleReadLabel} disabled={labelLoading} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-500 text-slate-950 font-semibold disabled:opacity-50 cursor-pointer">{labelLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}Read Label with Arena</button>}
+                    {labelPhoto && <button type="button" disabled={labelLoading} onClick={() => {setLabelPhoto(null);setLabelStatus(null);}} className="text-slate-400 underline">Remove photo</button>}
+                  </div>
+                  {labelPhoto && <img src={labelPhoto.url} alt="Nutrition label preview" className="max-h-36 max-w-full rounded-lg" />}
+                  {labelStatus && <p role="status" className="text-amber-200 leading-relaxed">{labelStatus}</p>}
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">
@@ -1371,8 +1458,7 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                   )}
                 </div>
 
-                {customMode === 'save' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-xs text-slate-400 mb-1">
                         Serving Label
@@ -1390,25 +1476,26 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
                       </label>
                       <input
                         type="number"
+                        min="0.1"
+                        step="any"
+                        required
                         value={cGrams}
                         onChange={(e) => setCGrams(e.target.value)}
                         className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 tabular-nums"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs text-slate-400 mb-1">
-                        Barcode (Optional UPC/EAN)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 0012345678905"
-                        value={cBarcode}
-                        onChange={(e) => setCBarcode(e.target.value)}
-                        className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 tabular-nums"
-                      />
-                    </div>
+                    {customMode === 'save' && <div>
+                      <label className="block text-xs text-slate-400 mb-1">Barcode (Optional UPC/EAN)</label>
+                      <div className="flex gap-1.5">
+                        <input type="text" inputMode="numeric" placeholder="Barcode digits" value={cBarcode} onChange={(e) => setCBarcode(e.target.value)} className="min-w-0 w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 tabular-nums" />
+                        <button type="button" onClick={() => setCustomScannerOpen(v => !v)} className="px-2.5 rounded-xl bg-amber-500 text-slate-950 font-semibold text-xs inline-flex items-center gap-1 cursor-pointer"><Camera className="w-4 h-4" />Scan</button>
+                      </div>
+                    </div>}
                   </div>
+                {customMode === 'save' && customScannerOpen && (
+                  <InlineBarcodeScanner catalog={catalog} offlineOnlyMode={offlineOnlyMode} compact autoStartCamera onFoodFound={() => {}} onBarcodeCaptured={(code) => {setCBarcode(code); setCustomScannerOpen(false);}} onCloseScanner={() => setCustomScannerOpen(false)} />
                 )}
+                <p className="text-xs text-slate-400">Enter nutrition amounts for one serving, not the whole package.</p>
 
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                   {[
@@ -1437,7 +1524,8 @@ export const FoodLoggerModal: React.FC<FoodLoggerModalProps> = ({
 
                 <button
                   type="submit"
-                  className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm cursor-pointer"
+                  disabled={labelLoading}
+                  className="w-full py-3 rounded-xl bg-emerald-500 disabled:opacity-50 hover:bg-emerald-400 text-slate-950 font-semibold text-sm cursor-pointer"
                 >
                   {customMode === 'save'
                     ? 'Save Custom Food & Log Serving'
